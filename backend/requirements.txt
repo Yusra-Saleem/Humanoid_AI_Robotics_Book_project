@@ -3,12 +3,8 @@ uvicorn
 qdrant-client
 fastembed
 python-dotenv
-better-auth
 asyncpg
 openai-agents
 SQLAlchemy
 pydantic
 pydantic-settings
-python-jose
-passlib[bcrypt]
-sqlalchemy[asyncio]

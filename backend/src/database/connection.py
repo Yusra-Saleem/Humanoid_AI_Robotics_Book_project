@@ -7,33 +7,59 @@ engine = None
 AsyncSessionLocal = None
 
 
-def _make_async_url(url: str) -> str:
+def _make_async_url(url: str) -> tuple[str, dict]:
     """
-    Ensure the database URL uses an async driver.
+    Ensure the database URL uses an async driver and extract SSL parameters.
 
     Neon typically provides URLs like:
-      postgres://user:pass@host/db
+      postgres://user:pass@host/db?sslmode=require
     or:
-      postgresql://user:pass@host/db
+      postgresql://user:pass@host/db?sslmode=require
 
     For SQLAlchemy asyncio with asyncpg, we need:
       postgresql+asyncpg://user:pass@host/db
+    
+    Returns:
+      tuple: (cleaned_url, connect_args_dict)
     """
     if not url:
-        return ""
+        return "", {}
 
-    if "+asyncpg" in url:
-        return url
+    # Parse and remove sslmode from URL
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    
+    parsed = urlparse(url)
+    query_params = parse_qs(parsed.query)
+    
+    # Extract sslmode if present
+    sslmode = query_params.pop('sslmode', ['require'])[0] if 'sslmode' in query_params else None
+    
+    # Build connect_args for asyncpg
+    connect_args = {}
+    if sslmode in ('require', 'verify-ca', 'verify-full'):
+        # asyncpg expects ssl=True (boolean) or an SSLContext object
+        # For Neon DB with sslmode=require, we just need ssl=True
+        import ssl
+        connect_args['ssl'] = ssl.create_default_context()
+    
+    # Rebuild URL without sslmode
+    new_query = urlencode(query_params, doseq=True)
+    parsed = parsed._replace(query=new_query)
+    clean_url = urlunparse(parsed)
+    
+    # Convert to asyncpg driver
+    if "+asyncpg" in clean_url:
+        return clean_url, connect_args
 
-    if url.startswith("postgresql://"):
-        return "postgresql+asyncpg://" + url[len("postgresql://") :]
+    if clean_url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + clean_url[len("postgresql://") :], connect_args
 
-    if url.startswith("postgres://"):
+    if clean_url.startswith("postgres://"):
         # Alias often used by Neon; normalize to postgresql+asyncpg
-        return "postgresql+asyncpg://" + url[len("postgres://") :]
+        return "postgresql+asyncpg://" + clean_url[len("postgres://") :], connect_args
 
     # Fallback: return as-is (for non-Postgres drivers)
-    return url
+    return clean_url, connect_args
 
 
 def _init_db_if_needed():
@@ -43,7 +69,7 @@ def _init_db_if_needed():
     if engine is not None:
         return  # Already initialized
     
-    async_db_url = _make_async_url(settings.NEON_DB_URL)
+    async_db_url, connect_args = _make_async_url(settings.NEON_DB_URL)
     
     if not async_db_url:
         # No database URL configured - database features disabled
@@ -55,6 +81,7 @@ def _init_db_if_needed():
             async_db_url,
             echo=False,  # Disable echo to reduce startup noise
             pool_pre_ping=True,  # Verify connections before using
+            connect_args=connect_args,  # Pass SSL and other connection args
         )
 
         # Create a sessionmaker bound to the engine for async sessions
